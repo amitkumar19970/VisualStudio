@@ -9,6 +9,9 @@ using GitHub.ViewModels.Dialog;
 using NSubstitute;
 using ReactiveUI;
 using NUnit.Framework;
+using GitHub.ViewModels;
+using ReactiveUI.Testing;
+using System.Reactive.Concurrency;
 
 public class LoginCredentialsViewModelTests
 {
@@ -20,17 +23,13 @@ public class LoginCredentialsViewModelTests
             var connectionManager = Substitute.For<IConnectionManager>();
             var connection = Substitute.For<IConnection>();
 
-            var gitHubLogin = Substitute.For<ILoginToGitHubViewModel>();
-            var gitHubLoginCommand = ReactiveCommand.CreateFromObservable(() =>
-                Observable.Return(connection));
-            gitHubLogin.Login.Returns(gitHubLoginCommand);
-            var enterpriseLogin = Substitute.For<ILoginToGitHubForEnterpriseViewModel>();
-
+            var gitHubLogin = CreateLoginToHostViewModel<ILoginToGitHubViewModel>(connection);
+            var enterpriseLogin = CreateLoginToHostViewModel<ILoginToGitHubForEnterpriseViewModel>();
             var loginViewModel = new LoginCredentialsViewModel(connectionManager, gitHubLogin, enterpriseLogin);
             var signalled = false;
 
             loginViewModel.Done.Subscribe(_ => signalled = true);
-            await gitHubLoginCommand.Execute();
+            await gitHubLogin.Login.Execute();
 
             Assert.True(signalled);
         }
@@ -40,17 +39,13 @@ public class LoginCredentialsViewModelTests
         {
             var connectionManager = Substitute.For<IConnectionManager>();
 
-            var gitHubLogin = Substitute.For<ILoginToGitHubViewModel>();
-            var gitHubLoginCommand = ReactiveCommand.CreateFromObservable(() =>
-                Observable.Return<IConnection>(null));
-            gitHubLogin.Login.Returns(gitHubLoginCommand);
-            var enterpriseLogin = Substitute.For<ILoginToGitHubForEnterpriseViewModel>();
-
+            var gitHubLogin = CreateLoginToHostViewModel<ILoginToGitHubViewModel>();
+            var enterpriseLogin = CreateLoginToHostViewModel<ILoginToGitHubForEnterpriseViewModel>();
             var loginViewModel = new LoginCredentialsViewModel(connectionManager, gitHubLogin, enterpriseLogin);
             var signalled = false;
 
             loginViewModel.Done.Subscribe(_ => signalled = true);
-            await gitHubLoginCommand.Execute();
+            await gitHubLogin.Login.Execute();
 
             Assert.False(signalled);
         }
@@ -58,31 +53,26 @@ public class LoginCredentialsViewModelTests
         [Test]
         public async Task AllowsLoginFromEnterpriseAfterGitHubLoginHasFailedAsync()
         {
-            var connectionManager = Substitute.For<IConnectionManager>();
-            var connection = Substitute.For<IConnection>();
+            using (TestUtils.WithScheduler(Scheduler.CurrentThread))
+            {
+                var connectionManager = Substitute.For<IConnectionManager>();
+                var connection = Substitute.For<IConnection>();
 
-            var gitHubLogin = Substitute.For<ILoginToGitHubViewModel>();
-            var gitHubLoginCommand = ReactiveCommand.CreateFromObservable(() =>
-                Observable.Return<IConnection>(null));
-            gitHubLogin.Login.Returns(gitHubLoginCommand);
+                var gitHubLogin = CreateLoginToHostViewModel<ILoginToGitHubViewModel>();
+                var enterpriseLogin = CreateLoginToHostViewModel<ILoginToGitHubForEnterpriseViewModel>(connection);
+                var loginViewModel = new LoginCredentialsViewModel(connectionManager, gitHubLogin, enterpriseLogin);
+                var success = false;
 
-            var enterpriseLogin = Substitute.For<ILoginToGitHubForEnterpriseViewModel>();
-            var enterpriseLoginCommand = ReactiveCommand.CreateFromObservable(() =>
-                Observable.Return(connection));
-            enterpriseLogin.Login.Returns(enterpriseLoginCommand);
+                loginViewModel.Done
+                    .OfType<IConnection>()
+                    .Where(x => x != null)
+                    .Subscribe(_ => success = true);
 
-            var loginViewModel = new LoginCredentialsViewModel(connectionManager, gitHubLogin, enterpriseLogin);
-            var success = false;
+                await gitHubLogin.Login.Execute();
+                await enterpriseLogin.Login.Execute();
 
-            loginViewModel.Done
-                .OfType<IConnection>()
-                .Where(x => x != null)
-                .Subscribe(_ => success = true);
-
-            await gitHubLoginCommand.Execute();
-            await enterpriseLoginCommand.Execute();
-
-            Assert.True(success);
+                Assert.True(success);
+            }
         }
     }
 
@@ -117,5 +107,14 @@ public class LoginCredentialsViewModelTests
             connections.RemoveAt(0);
             Assert.That(LoginMode.EnterpriseOnly, Is.EqualTo(loginViewModel.LoginMode));
         }
+    }
+
+    static T CreateLoginToHostViewModel<T>(IConnection login = null, IConnection oauthLogin = null)
+        where T : class, ILoginToHostViewModel
+    {
+        var result = Substitute.For<T>();
+        result.Login.Returns(ReactiveCommand.Create(() => login));
+        result.LoginViaOAuth.Returns(ReactiveCommand.Create(() => oauthLogin));
+        return result;
     }
 }
